@@ -4,16 +4,22 @@ import os.path as osp
 import time
 import cv2
 import torch
+import sys
 
 from loguru import logger
-
-from yolox.data.data_augment import preproc
+sys.path.append('.')
+sys.path.remove('/home/zhengyaz/BoT-SORT')
+print("sys path: ", sys.path)
+from yolox.data.data_augment import preproc, ValTransform_Old
 from yolox.exp import get_exp
 from yolox.utils import fuse_model, get_model_info, postprocess
 from yolox.utils.visualize import plot_tracking
-from yolox.tracker.byte_tracker import BYTETracker
-from yolox.tracking_utils.timer import Timer
+from tracker.byte_tracker import BYTETracker
+from tracking_utils.timer import Timer
+print(postprocess)
+import inspect
 
+print(os.path.abspath(inspect.getfile(postprocess)))
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 
@@ -144,6 +150,8 @@ class Predictor(object):
         self.rgb_means = (0.485, 0.456, 0.406)
         self.std = (0.229, 0.224, 0.225)
 
+        self.preproc = ValTransform_Old()
+
     def inference(self, img, timer):
         img_info = {"id": 0}
         if isinstance(img, str):
@@ -157,7 +165,8 @@ class Predictor(object):
         img_info["width"] = width
         img_info["raw_img"] = img
 
-        img, ratio = preproc(img, self.test_size, self.rgb_means, self.std)
+        # img, ratio = preproc(img, self.test_size, self.rgb_means, self.std)
+        img, ratio = self.preproc(img, None, self.test_size)
         img_info["ratio"] = ratio
         img = torch.from_numpy(img).unsqueeze(0).float().to(self.device)
         if self.fp16:
@@ -165,6 +174,8 @@ class Predictor(object):
 
         with torch.no_grad():
             timer.tic()
+            # print(f"input size: {img.size()}")
+            # print(img)
             outputs = self.model(img)
             if self.decoder is not None:
                 outputs = self.decoder(outputs, dtype=outputs.type())
@@ -254,11 +265,16 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
     frame_id = 0
     results = []
     while True:
+        if frame_id == 2000:
+            break
         if frame_id % 20 == 0:
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
         ret_val, frame = cap.read()
         if ret_val:
             outputs, img_info = predictor.inference(frame, timer)
+            # if outputs[0] is not None:
+                # print(f"output from predictor {outputs[0].shape}")
+                # print(outputs[0])
             if outputs[0] is not None:
                 online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
                 online_tlwhs = []
@@ -268,7 +284,8 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
                     tlwh = t.tlwh
                     tid = t.track_id
                     vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
-                    if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+                    # if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+                    if tlwh[2] * tlwh[3] > args.min_box_area:
                         online_tlwhs.append(tlwh)
                         online_ids.append(tid)
                         online_scores.append(t.score)
@@ -308,6 +325,8 @@ def main(exp, args):
     if args.save_result:
         vis_folder = osp.join(output_dir, "track_vis")
         os.makedirs(vis_folder, exist_ok=True)
+    else:
+        vis_folder = osp.join(output_dir, "track_vis")
 
     if args.trt:
         args.device = "gpu"
@@ -368,5 +387,5 @@ def main(exp, args):
 if __name__ == "__main__":
     args = make_parser().parse_args()
     exp = get_exp(args.exp_file, args.name)
-
+    
     main(exp, args)

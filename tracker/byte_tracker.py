@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from .kalman_filter import KalmanFilter
-from yolox.tracker import matching
+from tracker import matching
 from .basetrack import BaseTrack, TrackState
 
 class STrack(BaseTrack):
@@ -162,6 +162,7 @@ class BYTETracker(object):
         refind_stracks = []
         lost_stracks = []
         removed_stracks = []
+        # print(f"output results shape: {output_results.shape}")
 
         if output_results.shape[1] == 5:
             scores = output_results[:, 4]
