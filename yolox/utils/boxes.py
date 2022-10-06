@@ -44,18 +44,25 @@ def postprocess(prediction, num_classes, conf_thre=0.7, nms_thre=0.45):
         # If none are remaining => process next image
         if not image_pred.size(0):
             continue
+
+        # filter class to be only person and umbrella
+        
         # Get score and class with highest confidence
         class_conf, class_pred = torch.max(
             image_pred[:, 5 : 5 + num_classes], 1, keepdim=True
         )
+        class_mask1 = class_pred == 0
+        class_mask2 = class_pred == 25
+        class_mask = torch.logical_or(class_mask1, class_mask2).squeeze()
 
         conf_mask = (image_pred[:, 4] * class_conf.squeeze() >= conf_thre).squeeze()
+        final_mask = torch.logical_and(conf_mask, class_mask)
+
         # _, conf_mask = torch.topk((image_pred[:, 4] * class_conf.squeeze()), 1000)
         # Detections ordered as (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
         detections = torch.cat((image_pred[:, :5], class_conf, class_pred.float()), 1)
-        detections = detections[conf_mask]
-        # print(f"detection num: {len(detections)}, conf: {conf_thre}")
-        # print(detections)
+        detections = detections[final_mask]
+        # detections = detections[conf_mask]
         if not detections.size(0):
             continue
 
