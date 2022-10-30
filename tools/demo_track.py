@@ -274,6 +274,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
         ret_val, frame = cap.read()
         if ret_val:
             outputs, img_info = predictor.inference(frame, timer)
+            
             # if outputs[0] is not None:
                 # print(f"output from predictor {outputs[0].shape}")
                 # print(outputs[0])
@@ -298,7 +299,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
                         )
                 timer.toc()
                 online_im = plot_tracking(
-                    img_info['raw_img'], online_tlwhs, online_ids, online_classes, frame_id=frame_id + 1, fps=1. / timer.average_time
+                    img_info['raw_img'], online_tlwhs, online_ids, online_classes, scores=online_scores, frame_id=frame_id + 1, fps=1. / timer.average_time
                 )
             else:
                 timer.toc()

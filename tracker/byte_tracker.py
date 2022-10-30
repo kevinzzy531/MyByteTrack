@@ -13,7 +13,6 @@ from .basetrack import BaseTrack, TrackState
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
     def __init__(self, tlwh, score, class_id):
-
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
         self.kalman_filter = None
@@ -23,6 +22,13 @@ class STrack(BaseTrack):
         self.score = score
         self.class_id = class_id
         self.tracklet_len = 0
+
+        # add a running average for tlwh
+        self._tlwh_running_avg = np.asarray(tlwh, np.float)
+        self.avg_factor = 0.8
+
+        # kalman filter threshold
+        self.detect_thres = 0.88
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -80,14 +86,29 @@ class STrack(BaseTrack):
         self.frame_id = frame_id
         self.tracklet_len += 1
 
+        # old_tlwh = self.tlwh
         new_tlwh = new_track.tlwh
+        # fused_tlwh = new_track.score * new_tlwh + (1 - new_track.score) * old_tlwh
+
+        # if (new_track.score > self.detect_thres):
+        
+
         self.mean, self.covariance = self.kalman_filter.update(
             self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh))
+        # else:
+        #     self.mean, self.covariance = self.kalman_filter.update(
+        #         self.mean, self.covariance, self.tlwh_to_xyah(self.tlwh))
+
         self.state = TrackState.Tracked
         self.is_activated = True
-
         self.score = new_track.score
 
+        # update the running avg
+        self._tlwh_running_avg = self._tlwh_running_avg * self.avg_factor + (1 - self.avg_factor) * new_tlwh
+    
+    def setTlwhAvg(self):
+        self._tlwh_running_avg = self.tlwh.copy()
+      
     @property
     # @jit(nopython=True)
     def tlwh(self):
@@ -102,12 +123,30 @@ class STrack(BaseTrack):
         return ret
 
     @property
+    def area(self):
+        """Get current bounding box area
+        """
+        tlwh = self.tlwh_avg.copy()
+        return tlwh[2] * tlwh[3]
+
+    @property
+    def tlwh_avg(self) :
+        return self._tlwh_running_avg.copy()
+        
+
+    @property
     # @jit(nopython=True)
     def tlbr(self):
         """Convert bounding box to format `(min x, min y, max x, max y)`, i.e.,
         `(top left, bottom right)`.
         """
         ret = self.tlwh.copy()
+        ret[2:] += ret[:2]
+        return ret
+    
+    @property
+    def tlbr_avg(self):
+        ret = self.tlwh_avg.copy()
         ret[2:] += ret[:2]
         return ret
 
@@ -163,7 +202,6 @@ class BYTETracker(object):
         refind_stracks = []
         lost_stracks = []
         removed_stracks = []
-        # print(f"output results shape: {output_results.shape}")
 
         if output_results.shape[1] == 5:
             scores = output_results[:, 4]
@@ -267,8 +305,30 @@ class BYTETracker(object):
             track.mark_removed()
             removed_stracks.append(track)
 
+        """ Step 3.5: Use special criterial for matching new stracks"""
+        tracked_det = set()
+        for inew in u_detection:
+            det = detections[inew]
+            if det.score < self.det_thresh:
+                continue
+            for track in self.lost_stracks:
+                if (track.frame_id == self.frame_id):
+                    continue
+                if (abs(det.area - track.area) < 0.1 * track.area):
+                    diff_x = det.tlwh[0] - track.tlwh[0]
+                    diff_y = det.tlwh[1] - track.tlwh[1]
+                    if (diff_x**2 + diff_y**2 < 1.2 * max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)):
+                        track.update(det, self.frame_id)
+                        track.setTlwhAvg()
+                        activated_starcks.append(track)
+                        tracked_det.add(inew)
+                        break
+        
+
         """ Step 4: Init new stracks"""
         for inew in u_detection:
+            if inew in tracked_det:
+                continue
             track = detections[inew]
             if track.score < self.det_thresh:
                 continue
@@ -288,6 +348,10 @@ class BYTETracker(object):
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
         self.lost_stracks.extend(lost_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
+        # update lost stracks
+        # for track in self.lost_stracks:
+        #     track.update(STrack(track.tlwh, track.score, track.class_id), self.frame_id)
+
         self.removed_stracks.extend(removed_stracks)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
         # get scores of lost tracks
