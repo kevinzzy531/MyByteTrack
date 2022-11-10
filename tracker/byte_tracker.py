@@ -10,6 +10,8 @@ from .kalman_filter import KalmanFilter
 from tracker import matching
 from .basetrack import BaseTrack, TrackState
 
+import heapq
+
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
     def __init__(self, tlwh, score, class_id):
@@ -29,6 +31,12 @@ class STrack(BaseTrack):
 
         # kalman filter threshold
         self.detect_thres = 0.88
+
+        self.lost_len = 0
+
+    def __lt__(self, other):
+        return self.lost_len > other.lost_len
+
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -183,18 +191,23 @@ class STrack(BaseTrack):
 
 
 class BYTETracker(object):
-    def __init__(self, args, frame_rate=30):
+    def __init__(self, args, frame_rate=30, max_lost_track_in_memory=10):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
         self.removed_stracks = []  # type: list[STrack]
 
         self.frame_id = 0
         self.args = args
-        #self.det_thresh = args.track_thresh
+        # self.det_thresh = args.track_thresh
         self.det_thresh = args.track_thresh + 0.1
         self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
+
+        # priority queue for lost track
+        # self.lost_stracks_queue = PriorityQueue(max_lost_track_in_memory)
+        self.max_lost_track_in_memory = max_lost_track_in_memory
+        self.lost_stracks_pq = []
 
     def update(self, output_results, img_info, img_size):
         self.frame_id += 1
@@ -310,18 +323,22 @@ class BYTETracker(object):
         for inew in u_detection:
             det = detections[inew]
             if det.score < self.det_thresh:
+                print("--det score low")
                 continue
             for track in self.lost_stracks:
                 if (track.frame_id == self.frame_id):
                     continue
-                if (abs(det.area - track.area) < 0.1 * track.area):
+                if (abs(det.area - track.area) < 0.2 * track.area):
                     diff_x = det.tlwh[0] - track.tlwh[0]
                     diff_y = det.tlwh[1] - track.tlwh[1]
-                    if (diff_x**2 + diff_y**2 < 1.2 * max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)):
+                    print("--area matched")
+                    print(f"-- diff_x: {diff_x}, diff_y: {diff_y}, {max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)}")
+                    if (diff_x**2 + diff_y**2 < 2 * max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)):
                         track.update(det, self.frame_id)
                         track.setTlwhAvg()
                         activated_starcks.append(track)
                         tracked_det.add(inew)
+                        print(f"matched new detection!")
                         break
         
 
@@ -336,12 +353,19 @@ class BYTETracker(object):
             activated_starcks.append(track)
         """ Step 5: Update state"""
         for track in self.lost_stracks:
-            if self.frame_id - track.end_frame > self.max_time_lost:
-                track.mark_removed()
-                removed_stracks.append(track)
-
-        # print('Ramained match {} s'.format(t4-t3))
-
+            track.lost_len = self.frame_id - track.end_frame
+            # heapq.heappush(self.lost_stracks_pq, track)
+            # print(f"len of lost stracks pq: {len(self.lost_stracks_pq)}")
+            # if (len(self.lost_stracks) > self.max_lost_track_in_memory):
+            #     removed_stracks.append(self.lost_stracks[0])
+            #     self.lost_stracks_pq[0].mark_removed()
+            #     heapq.heappop(self.lost_stracks_pq)
+        heapq.heapify(self.lost_stracks)
+        while len(self.lost_stracks) > self.max_lost_track_in_memory:
+            removed_stracks.append(self.lost_stracks[0])
+            self.lost_stracks[0].mark_removed()
+            heapq.heappop(self.lost_stracks)
+           
         self.tracked_stracks = [t for t in self.tracked_stracks if t.state == TrackState.Tracked]
         self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
