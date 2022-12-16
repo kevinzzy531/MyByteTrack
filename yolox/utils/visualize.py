@@ -72,7 +72,7 @@ def plot_tracking(image, tlwhs, obj_ids, obj_classes, scores=None, frame_id=0, f
         obj_id = int(obj_ids[i])
         id_text = '{}'.format(int(obj_id))
         id_text = f"{int(obj_id)}: {COCO_CLASSES[int(obj_classes[i])]}"
-        # id_text += "{:.2f}".format(scores[i])
+        id_text += "{:.2f}".format(scores[i])
         if ids2 is not None:
             id_text = id_text + ', {}'.format(int(ids2[i]))
         color = get_color(abs(obj_id))

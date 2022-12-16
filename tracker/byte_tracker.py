@@ -14,6 +14,7 @@ import heapq
 
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
+    longest_lost_frame_len = 0
     def __init__(self, tlwh, score, class_id):
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
@@ -34,8 +35,15 @@ class STrack(BaseTrack):
 
         self.lost_len = 0
 
+    def _compute_weight(self):
+        if self.score > 0.85:
+            return self.lost_len
+        if self.score > 0.5:
+            return self.lost_len * 2
+        return self.lost_len * 3
+
     def __lt__(self, other):
-        return self.lost_len > other.lost_len
+        return self._compute_weight() > other._compute_weight()
 
 
     def predict(self):
@@ -191,15 +199,15 @@ class STrack(BaseTrack):
 
 
 class BYTETracker(object):
-    def __init__(self, args, frame_rate=30, max_lost_track_in_memory=10):
+    def __init__(self, args, frame_rate=30, max_lost_track_in_memory=50):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
         self.removed_stracks = []  # type: list[STrack]
 
         self.frame_id = 0
         self.args = args
-        # self.det_thresh = args.track_thresh
         self.det_thresh = args.track_thresh + 0.1
+        # self.det_thresh = 0.6
         self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
@@ -259,7 +267,9 @@ class BYTETracker(object):
                 tracked_stracks.append(track)
 
         ''' Step 2: First association, with high score detection boxes'''
-        strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
+        # strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
+        strack_pool = tracked_stracks
+
         # Predict the current location with KF
         STrack.multi_predict(strack_pool)
         dists = matching.iou_distance(strack_pool, detections)
@@ -302,7 +312,8 @@ class BYTETracker(object):
             track = r_tracked_stracks[it]
             if not track.state == TrackState.Lost:
                 track.mark_lost()
-                lost_stracks.append(track)
+                # lost_stracks.append(track)
+                self.lost_stracks.append(track)
 
         '''Deal with unconfirmed tracks, usually tracks with only one beginning frame'''
         detections = [detections[i] for i in u_detection]
@@ -320,18 +331,20 @@ class BYTETracker(object):
 
         """ Step 3.5: Use special criterial for matching new stracks"""
         tracked_det = set()
+        tracked_strack = set()
         for inew in u_detection:
             det = detections[inew]
             if det.score < self.det_thresh:
                 print("--det score low")
                 continue
-            for track in self.lost_stracks:
-                if (track.frame_id == self.frame_id):
+            for track in self.lost_stracks[::-1]:
+                if ( track in tracked_strack) :
                     continue
-                if (abs(det.area - track.area) < 0.2 * track.area):
+                if (abs(det.area - track.area) < 0.5 * track.area):
                     diff_x = det.tlwh[0] - track.tlwh[0]
                     diff_y = det.tlwh[1] - track.tlwh[1]
                     print("--area matched")
+                    print(f"conf: {det.score}")
                     print(f"-- diff_x: {diff_x}, diff_y: {diff_y}, {max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)}")
                     if (diff_x**2 + diff_y**2 < 2 * max(det.tlwh[2] ** 2, det.tlwh[3] ** 2)):
                         track.update(det, self.frame_id)
@@ -339,8 +352,9 @@ class BYTETracker(object):
                         activated_starcks.append(track)
                         tracked_det.add(inew)
                         print(f"matched new detection!")
+                        tracked_strack.add(track)
                         break
-        
+          
 
         """ Step 4: Init new stracks"""
         for inew in u_detection:
@@ -351,33 +365,26 @@ class BYTETracker(object):
                 continue
             track.activate(self.kalman_filter, self.frame_id)
             activated_starcks.append(track)
-        """ Step 5: Update state"""
-        for track in self.lost_stracks:
-            track.lost_len = self.frame_id - track.end_frame
-            # heapq.heappush(self.lost_stracks_pq, track)
-            # print(f"len of lost stracks pq: {len(self.lost_stracks_pq)}")
-            # if (len(self.lost_stracks) > self.max_lost_track_in_memory):
-            #     removed_stracks.append(self.lost_stracks[0])
-            #     self.lost_stracks_pq[0].mark_removed()
-            #     heapq.heappop(self.lost_stracks_pq)
-        heapq.heapify(self.lost_stracks)
-        while len(self.lost_stracks) > self.max_lost_track_in_memory:
-            removed_stracks.append(self.lost_stracks[0])
-            self.lost_stracks[0].mark_removed()
-            heapq.heappop(self.lost_stracks)
+        
            
         self.tracked_stracks = [t for t in self.tracked_stracks if t.state == TrackState.Tracked]
         self.tracked_stracks = joint_stracks(self.tracked_stracks, activated_starcks)
         self.tracked_stracks = joint_stracks(self.tracked_stracks, refind_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.tracked_stracks)
-        self.lost_stracks.extend(lost_stracks)
+        # self.lost_stracks.extend(lost_stracks)
         self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)
-        # update lost stracks
-        # for track in self.lost_stracks:
-        #     track.update(STrack(track.tlwh, track.score, track.class_id), self.frame_id)
 
         self.removed_stracks.extend(removed_stracks)
         self.tracked_stracks, self.lost_stracks = remove_duplicate_stracks(self.tracked_stracks, self.lost_stracks)
+        """ Step 5: Update state"""
+        for track in self.lost_stracks:
+            track.lost_len = self.frame_id - track.end_frame
+
+        heapq.heapify(self.lost_stracks)
+        while len(self.lost_stracks) > self.max_lost_track_in_memory:
+            removed_stracks.append(self.lost_stracks[0])
+            self.lost_stracks[0].mark_removed()
+            heapq.heappop(self.lost_stracks)
         # get scores of lost tracks
         output_stracks = [track for track in self.tracked_stracks if track.is_activated]
 
